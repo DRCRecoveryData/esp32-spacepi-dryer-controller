@@ -1144,9 +1144,9 @@ void drawK1AdjustPage() {
     tft.setTextColor(active ? K1_WHITE : K1_TEXT_DIM, active ? K1_CYAN_FILL : K1_PILL_BG);
     tft.drawString(name, x + 38, 49, 2);
   };
-  drawPreset(60, "ABS", (targetTemp == 65.0 && dryingHours == 12.0));
-  drawPreset(144, "PETG", (targetTemp == 60.0 && dryingHours == 8.0));
-  drawPreset(228, "PLA", (targetTemp == 50.0 && dryingHours == 8.0));
+  drawPreset(60, "ABS", (targetTemp == 50.0 && dryingHours == 12.0));
+  drawPreset(144, "PETG", (targetTemp == 50.0 && dryingHours == 8.0));
+  drawPreset(228, "PLA", (targetTemp == 45.0 && dryingHours == 8.0));
 
   tft.fillRoundRect(60, 68, 118, 46, 6, K1_PILL_BG);
   tft.drawRoundRect(60, 68, 118, 46, 6, K1_BORDER);
