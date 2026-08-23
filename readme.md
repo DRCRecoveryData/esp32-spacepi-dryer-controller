@@ -40,14 +40,10 @@ The firmware features a **Creality K1 OS-inspired dark dashboard**, precise PTC 
 
 | Function | ESP32 GPIO | Notes |
 | :--- | :--- | :--- |
-| **TFT Backlight (`TFT_BL_PIN`)** | GPIO 21 | PWM/Digital backlight control |
 | **Heater Control (`PIN_HEATER`)** | GPIO 17 | Active LOW (Optocoupler / SSR driver) |
 | **Fan PWM (`PIN_FAN`)** | GPIO 16 | 5kHz PWM MOSFET control |
 | **I2C SDA** | GPIO 27 | CN1 Header Pin 3 (BME280) |
 | **I2C SCL** | GPIO 22 | CN1 Header Pin 2 (BME280) |
-| **Touch CS (`XPT2046_CS`)** | GPIO 33 | VSPI Bus |
-| **Touch IRQ (`XPT2046_IRQ`)** | GPIO 36 | Touch interrupt line |
-| **Touch MOSI / MISO / CLK** | GPIO 32 / 39 / 25 | VSPI Bus |
 
 ---
 
