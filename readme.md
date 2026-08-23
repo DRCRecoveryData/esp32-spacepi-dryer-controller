@@ -2,7 +2,7 @@
 
 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; align-items: start; max-width: 100%;">
   <img 
-    src="https://github.com/user-attachments/assets/35f24f5d-dcb9-4504-8d97-edbd4673cf3f" 
+    src="https://github.com/user-attachments/assets/7e46bac3-b9eb-47a8-bc90-ba92987d3903"
     alt="Thiết kế chưa có tên" 
     style="width: 100%; height: auto; border-radius: 8px; object-fit: contain;" 
   />
