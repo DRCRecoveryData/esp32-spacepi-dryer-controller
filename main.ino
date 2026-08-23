@@ -10,7 +10,10 @@
 #include <TFT_eSPI.h>
 #include <XPT2046_Touchscreen.h>
 #include <Preferences.h>
+#include <esp_task_wdt.h>
 #include "time.h"
+
+#define WDT_TIMEOUT_SECONDS 5
 
 // ===== FORWARD DECLARATIONS =====
 void drawK1BaseLayout();
@@ -20,6 +23,9 @@ void updateK1Telemetry();
 void applyFanState();
 void startDryingLogic();
 void stopDryingLogic();
+void loadSettings();
+void saveSettings();
+void markSettingsChanged();
 
 // Đọc cảm biến nhiệt độ chip ESP32
 #ifdef __cplusplus
@@ -104,6 +110,10 @@ bool manualPwmMode = false;
 float manualDutyPercent = 0.0;
 bool isOverheatCooling = false;   // Cờ ngắt tạm thời khi vượt Profile
 
+// ===== BẢO VỆ FLASH NVS (DEBOUNCE WRITE) =====
+bool settingsNeedSave = false;
+unsigned long lastSettingChange = 0;
+
 // ===== CHẾ ĐỘ SẤY & HẸN GIỜ =====
 bool isDrying = false;
 bool isAutoMode = false;
@@ -118,6 +128,7 @@ float currentTemp = 0.0;
 float currentHum = 0.0;
 float cpuTemp = 0.0;
 bool bmeOk = false;
+int bmeErrorCount = 0;
 
 bool isPortalMode = false;
 DNSServer dnsServer;
@@ -133,13 +144,39 @@ int chartIndex = 0;
 unsigned long lastTftUpdate = 0;
 unsigned long lastChartPush = 0;
 unsigned long lastTouchDebounce = 0;
+unsigned long lastSensorRead = 0;
 
 Adafruit_BME280 bme;
 WebServer server(80);
 TFT_eSPI tft = TFT_eSPI();
 
-// ===== TIỆN ÍCH THỜI GIAN & PHẦN CỨNG =====
+// ===== QUẢN LÝ LƯU TRỮ FLASH NVS =====
+void loadSettings() {
+  prefs.begin("dryer_cfg", true);
+  targetTemp      = prefs.getFloat("targetTemp", 65.0);
+  dryingHours     = prefs.getFloat("dryingHours", 12.0);
+  targetHum       = prefs.getFloat("targetHum", 20.0);
+  fanSpeedPercent = prefs.getInt("fanSpeed", 50);
+  windowSizeMs    = prefs.getULong("windowMs", 500);
+  prefs.end();
+}
 
+void saveSettings() {
+  prefs.begin("dryer_cfg", false);
+  prefs.putFloat("targetTemp", targetTemp);
+  prefs.putFloat("dryingHours", dryingHours);
+  prefs.putFloat("targetHum", targetHum);
+  prefs.putInt("fanSpeed", fanSpeedPercent);
+  prefs.putULong("windowMs", windowSizeMs);
+  prefs.end();
+}
+
+void markSettingsChanged() {
+  settingsNeedSave = true;
+  lastSettingChange = millis();
+}
+
+// ===== TIỆN ÍCH THỜI GIAN & PHẦN CỨNG =====
 String getFormattedTime() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) return "--:--:--";
@@ -159,7 +196,7 @@ String getFullFormattedDateTime() {
 void applyFanState() {
   int duty = 0;
   if (isCoolingDown) {
-    duty = 255; // Chế độ xả nhiệt sau khi Stop: quạt quay 100%
+    duty = 255;
   } else if (fanEnabled && !isOverheatCooling) {
     duty = map(fanSpeedPercent, 0, 100, 0, 255);
   }
@@ -198,10 +235,9 @@ void stopDryingLogic() {
   manualDutyPercent = 0.0;
   digitalWrite(PIN_HEATER, HEATER_OFF);
   
-  // Sau khi ấn STOP: nếu buồng > 40°C thì quạt thổi 100% để xả nhiệt
   if (currentTemp > COOLDOWN_TEMP) {
     isCoolingDown = true;
-    fanEnabled = false; // Tắt trạng thái chạy thường
+    fanEnabled = false;
   } else {
     isCoolingDown = false;
     fanEnabled = false;
@@ -209,14 +245,20 @@ void stopDryingLogic() {
   applyFanState();
 }
 
-// ===== THUẬT TOÁN ĐIỀU NHIỆT & XẢ NHIỆT =====
+// ===== THUẬT TOÁN ĐIỀU NHIỆT & BẢO VỆ FAILSAFE =====
 void updateHeaterControl() {
-  // Logic tự tắt quạt khi đã nguội dưới 40°C
   if (isCoolingDown) {
     if (currentTemp <= COOLDOWN_TEMP && currentTemp > 0.0) {
       isCoolingDown = false;
       applyFanState();
     }
+  }
+
+  // 1. FAILSAFE: Cảm biến ngắt kết nối / Lỗi đọc dữ liệu -> NGẮT SƯỞI NGAY
+  if (!bmeOk || isnan(currentTemp) || currentTemp <= 5.0 || bmeErrorCount > 3) {
+    heaterDutyPercent = 0.0;
+    digitalWrite(PIN_HEATER, HEATER_OFF);
+    return;
   }
 
   if (!isDrying && !manualPwmMode) {
@@ -225,7 +267,7 @@ void updateHeaterControl() {
     return;
   }
 
-  // Chạm ngưỡng nguy hiểm: Dừng hẳn máy
+  // 2. Chạm ngưỡng nguy hiểm: Dừng khẩn cấp
   if (currentTemp >= MAX_SAFE_TEMP) {
     stopDryingLogic();
     if (currentTab == 1) drawK1AdjustPage();
@@ -241,19 +283,16 @@ void updateHeaterControl() {
       return;
     }
 
-    // Khi chạm hoặc vượt nhiệt độ Profile: Ngắt cả PTC và Tắt Quạt
     if (currentTemp >= targetTemp) {
       if (!isOverheatCooling) {
         isOverheatCooling = true;
         heaterDutyPercent = 0.0;
-        applyFanState(); // Tắt quạt
+        applyFanState();
       }
-    } 
-    // Hạ nhiệt xuống dưới Target -2.0°C mới cho phép chạy lại
-    else if (currentTemp <= (targetTemp - 2.0)) {
+    } else if (currentTemp <= (targetTemp - 2.0)) {
       if (isOverheatCooling) {
         isOverheatCooling = false;
-        applyFanState(); // Bật lại quạt
+        applyFanState();
       }
     }
 
@@ -275,7 +314,7 @@ void updateHeaterControl() {
 
   unsigned long now = millis();
   if (now - windowStartTime >= windowSizeMs) {
-    windowStartTime += windowSizeMs;
+    windowStartTime = now;
   }
 
   unsigned long onDuration = (unsigned long)((heaterDutyPercent / 100.0) * windowSizeMs);
@@ -525,7 +564,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
         </select>
       </div>
 
-      <!-- BẢNG BĂM XUNG PTC HEATER POWER (Mặc định 0%, OFF) -->
+      <!-- BẢNG BĂM XUNG PTC HEATER POWER -->
       <div class="pwm-control-box">
         <div style="display:flex; justify-content:space-between; align-items:center;">
           <span style="font-weight:600; font-size:0.8rem;">PTC Heater Power</span>
@@ -540,7 +579,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
         <input type="range" id="pwmSlider" class="slider" min="0" max="100" value="0" oninput="updatePwmLabel(this.value)" onchange="sendPwmDuty(this.value)">
       </div>
 
-      <!-- BẢNG ĐIỀU KHIỂN QUẠT (Mặc định 50%) -->
+      <!-- BẢNG ĐIỀU KHIỂN QUẠT -->
       <div class="fan-control-box">
         <div style="display:flex; justify-content:space-between; align-items:center;">
           <span style="font-weight:600; font-size:0.8rem;">Fan</span>
@@ -880,6 +919,7 @@ void playBootAnimation() {
   int cx = 160, cy = 95;
 
   for (int frame = 0; frame < 36; frame++) {
+    esp_task_wdt_reset();
     tft.drawRoundRect(cx - 50, cy - 40, 100, 75, 16, K1_BORDER);
     tft.drawCircle(cx, cy - 10, 38, K1_WHITE);
     tft.fillRect(cx - 45, cy - 35, 90, 60, K1_BG);
@@ -1059,7 +1099,6 @@ void updateK1Telemetry() {
   tft.setTextColor(K1_CYAN_LINE, K1_PILL_BG);
   tft.drawString(String((int)currentHum) + "%", 305, 95);
 
-  // Ô THỜI GIAN SẤY CÒN LẠI: XÓA NỀN SẠCH & DÙNG SIZE 1 FONT 2 GỌN GÀNG
   tft.fillRect(258, 122, 48, 26, K1_PILL_BG);
   tft.setTextDatum(MR_DATUM);
   tft.setTextSize(1);
@@ -1191,21 +1230,27 @@ void handleTouchEvents() {
         return;
       }
       if (touchY >= 34 && touchY <= 64) {
-        if (touchX >= 58 && touchX <= 138) { targetTemp = 65.0; dryingHours = 12.0; }
-        else if (touchX >= 142 && touchX <= 222) { targetTemp = 60.0; dryingHours = 8.0; }
-        else if (touchX >= 226 && touchX <= 306) { targetTemp = 50.0; dryingHours = 8.0; }
+        if (touchX >= 58 && touchX <= 138) { targetTemp = 65.0; dryingHours = 12.0; markSettingsChanged(); }
+        else if (touchX >= 142 && touchX <= 222) { targetTemp = 60.0; dryingHours = 8.0; markSettingsChanged(); }
+        else if (touchX >= 226 && touchX <= 306) { targetTemp = 50.0; dryingHours = 8.0; markSettingsChanged(); }
         drawK1AdjustPage();
       } else if (touchY >= 68 && touchY <= 116 && touchX <= 180) {
         if (touchX <= 100) targetTemp = constrain(targetTemp - 1.0, 35.0, 66.0);
         else targetTemp = constrain(targetTemp + 1.0, 35.0, 66.0);
+        markSettingsChanged();
         drawK1AdjustPage();
       } else if (touchY >= 68 && touchY <= 116 && touchX > 180) {
         if (touchX <= 230) dryingHours = constrain(dryingHours - 0.5, 0.5, 24.0);
         else dryingHours = constrain(dryingHours + 0.5, 0.5, 24.0);
+        markSettingsChanged();
         drawK1AdjustPage();
       } else if (touchY >= 118 && touchY <= 164) {
         if (touchX <= 180) { fanEnabled = !fanEnabled; isCoolingDown = false; applyFanState(); }
-        else { fanSpeedPercent = (fanSpeedPercent == 100) ? 50 : 100; applyFanState(); }
+        else { 
+          fanSpeedPercent = (fanSpeedPercent == 100) ? 50 : 100; 
+          markSettingsChanged();
+          applyFanState(); 
+        }
         drawK1AdjustPage();
       } else if (touchY >= 168 && touchY <= 226) {
         if (touchX <= 180 && !isDrying && !manualPwmMode) startDryingLogic();
@@ -1256,6 +1301,7 @@ void handleToggleFan() {
 void handleSetFan() {
   if (server.hasArg("speed")) {
     fanSpeedPercent = server.arg("speed").toInt();
+    markSettingsChanged();
     applyFanState();
     if (currentTab == 1) drawK1AdjustPage();
   }
@@ -1265,6 +1311,7 @@ void handleSetFan() {
 void handleSetPwm() {
   if (server.hasArg("window")) {
     windowSizeMs = constrain(server.arg("window").toInt(), 200, 10000);
+    markSettingsChanged();
   }
   if (server.hasArg("duty")) {
     manualDutyPercent = constrain(server.arg("duty").toFloat(), 0.0, 100.0);
@@ -1297,6 +1344,7 @@ void handleStart() {
     if (server.hasArg("hours")) dryingHours = server.arg("hours").toFloat();
   }
 
+  markSettingsChanged();
   startDryingLogic();
   if (currentTab == 1) drawK1AdjustPage();
   server.send(200, "text/plain", "OK");
@@ -1312,7 +1360,26 @@ void handleStop() {
 void setup() {
   Serial.begin(115200);
 
+  // 1. Cấu hình bảo vệ ngắt gia nhiệt ngay lập tức khi cấp nguồn
+  pinMode(PIN_HEATER, OUTPUT);
+  digitalWrite(PIN_HEATER, HEATER_OFF);
+
+  // 2. Nạp cấu hình từ Flash
+  loadSettings();
   setBacklight(true);
+
+  // 3. Khởi tạo Watchdog Timer (WDT) 5 giây tương thích ESP32 Core v2.x & v3.x
+  #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+    esp_task_wdt_config_t wdt_config = {
+      .timeout_ms = WDT_TIMEOUT_SECONDS * 1000,
+      .idle_core_mask = 0,
+      .trigger_panic = true
+    };
+    esp_task_wdt_reconfigure(&wdt_config);
+  #else
+    esp_task_wdt_init(WDT_TIMEOUT_SECONDS, true);
+  #endif
+  esp_task_wdt_add(NULL);
 
   touchscreenSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
   touchscreen.begin(touchscreenSPI);
@@ -1323,9 +1390,6 @@ void setup() {
 
   playBootAnimation();
 
-  pinMode(PIN_HEATER, OUTPUT);
-  digitalWrite(PIN_HEATER, HEATER_OFF);
-
   #if ESP_ARDUINO_VERSION_MAJOR >= 3
     ledcAttach(PIN_FAN, FAN_PWM_FREQ, FAN_PWM_RES);
   #else
@@ -1335,6 +1399,7 @@ void setup() {
   applyFanState();
 
   Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setTimeOut(50); // Timeout chống lock bus I2C
   bmeOk = bme.begin(0x76, &Wire) || bme.begin(0x77, &Wire);
 
   prefs.begin("wifi_cfg", true);
@@ -1360,6 +1425,7 @@ void setup() {
   
   unsigned long startWifiTime = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - startWifiTime < 6000)) {
+    esp_task_wdt_reset();
     delay(200);
   }
 
@@ -1403,6 +1469,7 @@ void setup() {
         Update.printError(Serial);
       }
     } else if (upload.status == UPLOAD_FILE_WRITE) {
+      esp_task_wdt_reset();
       if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
         Update.printError(Serial);
       }
@@ -1425,6 +1492,9 @@ void setup() {
 }
 
 void loop() {
+  // Feed Watchdog Timer
+  esp_task_wdt_reset();
+
   if (isPortalMode) {
     dnsServer.processNextRequest();
     server.handleClient();
@@ -1436,15 +1506,34 @@ void loop() {
   server.handleClient();
   handleTouchEvents();
 
-  updateHeaterControl();
-
-  if (bmeOk) {
-    currentTemp = bme.readTemperature();
-    currentHum = bme.readHumidity();
+  // Kiểm tra lưu cấu hình an toàn cho Flash sau 3s dừng thao tác
+  if (settingsNeedSave && (millis() - lastSettingChange > 3000)) {
+    saveSettings();
+    settingsNeedSave = false;
   }
 
-  cpuTemp = getCpuTemperature();
+  updateHeaterControl();
 
+  // Đọc BME280 chu kỳ 500ms
+  if (millis() - lastSensorRead >= 500) {
+    lastSensorRead = millis();
+    if (bmeOk) {
+      float t = bme.readTemperature();
+      float h = bme.readHumidity();
+      if (!isnan(t) && !isnan(h) && t > 0.0) {
+        currentTemp = t;
+        currentHum = h;
+        bmeErrorCount = 0;
+      } else {
+        bmeErrorCount++;
+      }
+    } else {
+      bmeOk = bme.begin(0x76, &Wire) || bme.begin(0x77, &Wire);
+    }
+    cpuTemp = getCpuTemperature();
+  }
+
+  // Quản lý thời gian chạy chế độ sấy
   if (isDrying && !isAutoMode && !manualPwmMode) {
     unsigned long elapsed = millis() - startTime;
     if (elapsed >= dryingDuration) {
@@ -1455,6 +1544,7 @@ void loop() {
     }
   }
 
+  // Cập nhật biểu đồ nhiệt độ chu kỳ 3s
   if (millis() - lastChartPush >= 3000) {
     lastChartPush = millis();
     if (chartIndex < MAX_POINTS) {
@@ -1472,6 +1562,7 @@ void loop() {
     if (currentTab == 0) renderK1DualChart();
   }
 
+  // Cập nhật màn hình chính chu kỳ 500ms
   if (millis() - lastTftUpdate >= 500) {
     lastTftUpdate = millis();
     if (currentTab == 0) {
