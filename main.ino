@@ -153,7 +153,7 @@ TFT_eSPI tft = TFT_eSPI();
 // ===== QUẢN LÝ LƯU TRỮ FLASH NVS =====
 void loadSettings() {
   prefs.begin("dryer_cfg", true);
-  targetTemp      = prefs.getFloat("targetTemp", 65.0);
+  targetTemp      = prefs.getFloat("targetTemp", 50.0);
   dryingHours     = prefs.getFloat("dryingHours", 12.0);
   targetHum       = prefs.getFloat("targetHum", 20.0);
   fanSpeedPercent = prefs.getInt("fanSpeed", 50);
