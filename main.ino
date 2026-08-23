@@ -94,8 +94,8 @@ XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
 #define K1_GOLD       0xFEA0  
 
 // ===== THÔNG SỐ ĐIỀU NHIỆT & MẶC ĐỊNH HỆ THỐNG =====
-float targetTemp = 65.0;          
-const float MAX_SAFE_TEMP = 67.0; // Ngưỡng dừng khẩn cấp bảo vệ máy (66-68°C)
+float targetTemp = 50.0;          
+const float MAX_SAFE_TEMP = 55.0; // Ngưỡng dừng khẩn cấp bảo vệ máy (50-55°C)
 const float COOLDOWN_TEMP = 40.0; // Ngưỡng quạt tự ngắt sau khi hạ nhiệt
 int fanSpeedPercent = 50;         // Mặc định quạt 50%
 bool fanEnabled = false;          
