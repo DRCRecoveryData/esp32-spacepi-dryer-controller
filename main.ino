@@ -534,9 +534,9 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
 
       <div style="font-size: 0.75rem; font-weight: 600; color: var(--text-dim); text-transform: uppercase;">Filament Profiles</div>
       <div class="preset-group">
-        <button type="button" class="btn-preset active" onclick="setPreset(65, 12, this)">ABS</button>
-        <button type="button" class="btn-preset" onclick="setPreset(60, 8, this)">PETG</button>
-        <button type="button" class="btn-preset" onclick="setPreset(50, 8, this)">PLA</button>
+        <button type="button" class="btn-preset active" onclick="setPreset(50, 12, this)">ABS</button>
+        <button type="button" class="btn-preset" onclick="setPreset(50, 8, this)">PETG</button>
+        <button type="button" class="btn-preset" onclick="setPreset(45, 8, this)">PLA</button>
       </div>
 
       <div class="input-row">
@@ -1230,9 +1230,9 @@ void handleTouchEvents() {
         return;
       }
       if (touchY >= 34 && touchY <= 64) {
-        if (touchX >= 58 && touchX <= 138) { targetTemp = 65.0; dryingHours = 12.0; markSettingsChanged(); }
-        else if (touchX >= 142 && touchX <= 222) { targetTemp = 60.0; dryingHours = 8.0; markSettingsChanged(); }
-        else if (touchX >= 226 && touchX <= 306) { targetTemp = 50.0; dryingHours = 8.0; markSettingsChanged(); }
+        if (touchX >= 58 && touchX <= 138) { targetTemp = 50.0; dryingHours = 12.0; markSettingsChanged(); }
+        else if (touchX >= 142 && touchX <= 222) { targetTemp = 50.0; dryingHours = 8.0; markSettingsChanged(); }
+        else if (touchX >= 226 && touchX <= 306) { targetTemp = 45.0; dryingHours = 8.0; markSettingsChanged(); }
         drawK1AdjustPage();
       } else if (touchY >= 68 && touchY <= 116 && touchX <= 180) {
         if (touchX <= 100) targetTemp = constrain(targetTemp - 1.0, 35.0, 66.0);
