@@ -75,5 +75,3 @@ Install the following libraries via the Arduino IDE Library Manager or PlatformI
 ## License
 
 This project is licensed under the MIT License - feel free to use and modify for personal or commercial projects.
-
-```
